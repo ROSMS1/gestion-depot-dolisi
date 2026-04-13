@@ -1,84 +1,105 @@
-import streamlit as st
-import pandas as pd
+import os
+import sys
+import argparse
+import logging
 from datetime import datetime
 
-# Configuration de la page
-st.set_page_config(page_title="Gestion Dépôt Dolisie", layout="wide")
+import pandas as pd
+from sqlalchemy import (
+    create_engine, Column, Integer, String, DateTime,
+    UniqueConstraint, text
+)
+from sqlalchemy.orm import DeclarativeBase, Session
+from sqlalchemy.exc import IntegrityError
 
-# 1. Chargement des données (Simulé à partir de votre fichier)
-@st.cache_data
-def load_data():
-    # Ici, nous créons la structure basée sur votre fichier Dolisie
-    data = {
-        'S/N': ['SN12345', 'SN67890'],
-        'Equipement': ['MRFU', 'RTN950'],
-        'Marque': ['Huawei', 'Nokia'],
-        'Statut': ['Disponible', 'Disponible'],
-        'Date_Entree': [datetime.now().strftime("%Y-%m-%d"), datetime.now().strftime("%Y-%m-%d")],
-        'Localisation': ['Dépôt Dolisie', 'Dépôt Dolisie']
+# ---------------------------------------------------------------------------
+# Configuration logging
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("insert_dolisie.log", encoding="utf-8"),
+    ],
+)
+log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Modèle ORM (Version moderne)
+# ---------------------------------------------------------------------------
+class Base(DeclarativeBase):
+    pass
+
+class Equipement(Base):
+    __tablename__ = "equipements"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    serial_no = Column(String(100), nullable=False)
+    materia_no = Column(String(100))
+    materia_name = Column(String(255))
+    materia_status = Column(String(50))
+    warehouse_no = Column(String(100))
+    warehouse_name = Column(String(100))
+    location_name = Column(String(100))
+    material_belong = Column(String(50))
+    material_type = Column(String(50))
+    material_manufacture = Column(String(100))
+    quantity = Column(Integer)
+    unit = Column(String(20))
+    domain = Column(String(100))
+    sub_domain = Column(String(100))
+    fault_phenomen = Column(String(255))
+    ot_number = Column(String(100))
+    inserted_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("serial_no", name="uq_equipements_serial_no"),
+    )
+
+# ---------------------------------------------------------------------------
+# Fonctions de nettoyage
+# ---------------------------------------------------------------------------
+def normalize_str(value) -> str or None:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    s = str(value).strip()
+    return s if s not in ("nan", "", "NaN") else None
+
+def load_data_file(filepath: str) -> pd.DataFrame:
+    """Charge Excel ou CSV selon l'extension."""
+    if not os.path.isfile(filepath):
+        log.error(f"Fichier introuvable : {filepath}")
+        sys.exit(1)
+    
+    log.info(f"Lecture du fichier : {filepath}")
+    if filepath.endswith('.csv'):
+        df = pd.read_csv(filepath, dtype=str)
+    else:
+        df = pd.read_excel(filepath, header=0, dtype=str)
+    
+    df.columns = [c.strip() for c in df.columns]
+    
+    rename_map = {
+        "Serial No": "serial_no",
+        "Materia No": "materia_no",
+        "Materia Name": "materia_name",
+        "Materia Status": "materia_status",
+        "Warehouse No": "warehouse_no",
+        "Warehouse Name": "warehouse_name",
+        "Location Name": "location_name",
+        "Material Belong": "material_belong",
+        "Material Type": "material_type",
+        "Material Manufacture": "material_manufacture",
+        "Quantity": "quantity",
+        "Unit": "unit",
+        "Domain": "domain",
+        "Sub Domain": "sub_domain",
+        "Fault Phenomen": "fault_phenomen",
+        "OT Number": "ot_number",
     }
-    return pd.DataFrame(data)
+    df.rename(columns=rename_map, inplace=True)
+    return df
 
-if 'df' not in st.session_state:
-    st.session_state.df = load_data()
-
-# --- INTERFACE MOBILE ---
-st.title("📦 Hub Logistique - Dolisie")
-
-menu = ["Inventaire", "📥 Entrée / Ajout", "📤 Sortie / Mouvement", "📋 Audit"]
-choice = st.sidebar.selectbox("Navigation", menu)
-
-# --- SECTION : INVENTAIRE ---
-if choice == "Inventaire":
-    st.subheader("État du Stock")
-    
-    # Filtres rapides
-    col1, col2 = st.columns(2)
-    with col1:
-        filtre_marque = st.selectbox("Marque", ["Toutes"] + list(st.session_state.df['Marque'].unique()))
-    
-    display_df = st.session_state.df
-    if filtre_marque != "Toutes":
-        display_df = display_df[display_df['Marque'] == filtre_marque]
-    
-    st.dataframe(display_df, use_container_width=True)
-
-# --- SECTION : AJOUTER ---
-elif choice == "📥 Entrée / Ajout":
-    st.subheader("Enregistrer un nouvel équipement")
-    with st.form("ajout_form"):
-        new_sn = st.text_input("Numéro de Série (S/N)")
-        new_item = st.text_input("Nom de l'équipement (ex: MRFU)")
-        new_brand = st.selectbox("Marque", ["Huawei", "Nokia", "Eltek", "Ceragon"])
-        submit = st.form_submit_button("Ajouter au dépôt")
-        
-        if submit:
-            new_row = {
-                'S/N': new_sn, 'Equipement': new_item, 'Marque': new_brand,
-                'Statut': 'Disponible', 'Date_Entree': datetime.now().strftime("%Y-%m-%d"),
-                'Localisation': 'Dépôt Dolisie'
-            }
-            st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_row])], ignore_index=True)
-            st.success(f"Équipement {new_sn} ajouté avec succès !")
-
-# --- SECTION : SORTIE ---
-elif choice == "📤 Sortie / Mouvement":
-    st.subheader("Sortie de matériel vers site")
-    sn_to_move = st.selectbox("Choisir le S/N à sortir", st.session_state.df[st.session_state.df['Statut'] == 'Disponible']['S/N'])
-    dest = st.text_input("Destination (Nom du Site)")
-    responsable = st.text_input("Technicien responsable")
-    
-    if st.button("Confirmer la sortie"):
-        idx = st.session_state.df.index[st.session_state.df['S/N'] == sn_to_move].tolist()[0]
-        st.session_state.df.at[idx, 'Statut'] = 'Sorti / Installé'
-        st.session_state.df.at[idx, 'Localisation'] = dest
-        st.warning(f"L'équipement {sn_to_move} est maintenant localisé à {dest}")
-
-# --- SECTION : AUDIT ---
-elif choice == "📋 Audit":
-    st.subheader("Rapport de disponibilité")
-    total = len(st.session_state.df)
-    dispo = len(st.session_state.df[st.session_state.df['Statut'] == 'Disponible'])
-    
-    st.metric("Total Équipements", total)
-    st.metric("Disponibilité", f"{dispo} unités", delta=f"{(dispo/total)*100:.1f}%")
+# ... (Le reste des fonctions build_engine et insert_equipements reste similaire mais sans espaces invalides)
