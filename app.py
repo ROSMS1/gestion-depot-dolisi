@@ -1,108 +1,84 @@
-import os
-import sys
-import pandas as pd
 import streamlit as st
+import pandas as pd
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, UniqueConstraint, text
-from sqlalchemy.orm import DeclarativeBase, Session
-from sqlalchemy.exc import IntegrityError
 
-# --- CONFIGURATION DE LA BASE DE DONNÉES ---
-DB_URL = "sqlite:///depot_dolisie.db"
-engine = create_engine(DB_URL, echo=False)
+# Configuration de la page
+st.set_page_config(page_title="Gestion Dépôt Dolisie", layout="wide")
 
-class Base(DeclarativeBase):
-    pass
+# 1. Chargement des données (Simulé à partir de votre fichier)
+@st.cache_data
+def load_data():
+    # Ici, nous créons la structure basée sur votre fichier Dolisie
+    data = {
+        'S/N': ['SN12345', 'SN67890'],
+        'Equipement': ['MRFU', 'RTN950'],
+        'Marque': ['Huawei', 'Nokia'],
+        'Statut': ['Disponible', 'Disponible'],
+        'Date_Entree': [datetime.now().strftime("%Y-%m-%d"), datetime.now().strftime("%Y-%m-%d")],
+        'Localisation': ['Dépôt Dolisie', 'Dépôt Dolisie']
+    }
+    return pd.DataFrame(data)
 
-class Equipement(Base):
-    __tablename__ = "equipements"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    serial_no = Column(String(100), nullable=False)
-    materia_no = Column(String(100))
-    materia_name = Column(String(255))
-    materia_status = Column(String(50))
-    warehouse_no = Column(String(100))
-    warehouse_name = Column(String(100))
-    location_name = Column(String(100))
-    material_belong = Column(String(50))
-    material_type = Column(String(50))
-    material_manufacture = Column(String(100))
-    quantity = Column(Integer)
-    unit = Column(String(20))
-    domain = Column(String(100))
-    sub_domain = Column(String(100))
-    fault_phenomen = Column(String(255))
-    ot_number = Column(String(100))
-    inserted_at = Column(DateTime, default=datetime.utcnow)
-    __table_args__ = (UniqueConstraint("serial_no", name="uq_serial"),)
+if 'df' not in st.session_state:
+    st.session_state.df = load_data()
 
-# Création de la table si elle n'existe pas
-Base.metadata.create_all(engine)
+# --- INTERFACE MOBILE ---
+st.title("📦 Hub Logistique - Dolisie")
 
-# --- FONCTIONS UTILES ---
-def normalize_str(value):
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return None
-    s = str(value).strip()
-    return s if s not in ("nan", "", "NaN") else None
+menu = ["Inventaire", "📥 Entrée / Ajout", "📤 Sortie / Mouvement", "📋 Audit"]
+choice = st.sidebar.selectbox("Navigation", menu)
 
-def load_data_into_db(filepath):
-    """Importe les données du fichier Excel/CSV vers la base SQL"""
-    if not os.path.exists(filepath):
-        return False
+# --- SECTION : INVENTAIRE ---
+if choice == "Inventaire":
+    st.subheader("État du Stock")
     
-    df = pd.read_csv(filepath) if filepath.endswith('.csv') else pd.read_excel(filepath)
-    df.columns = [c.strip() for c in df.columns]
+    # Filtres rapides
+    col1, col2 = st.columns(2)
+    with col1:
+        filtre_marque = st.selectbox("Marque", ["Toutes"] + list(st.session_state.df['Marque'].unique()))
     
-    with Session(engine) as session:
-        for _, row in df.iterrows():
-            sn = normalize_str(row.get("Serial No"))
-            if not sn: continue
-            
-            equip = Equipement(
-                serial_no=sn,
-                materia_name=normalize_str(row.get("Materia Name")),
-                material_manufacture=normalize_str(row.get("Material Manufacture")),
-                materia_status="Disponible",
-                location_name="Dépôt Dolisie"
-            )
-            try:
-                session.add(equip)
-                session.commit()
-            except IntegrityError:
-                session.rollback()
-    return True
+    display_df = st.session_state.df
+    if filtre_marque != "Toutes":
+        display_df = display_df[display_df['Marque'] == filtre_marque]
+    
+    st.dataframe(display_df, use_container_width=True)
 
-# --- INTERFACE STREAMLIT ---
-st.set_page_config(page_title="MTN Dolisie Hub", layout="wide")
-st.title("📦 Gestion Dépôt Dolisie")
+# --- SECTION : AJOUTER ---
+elif choice == "📥 Entrée / Ajout":
+    st.subheader("Enregistrer un nouvel équipement")
+    with st.form("ajout_form"):
+        new_sn = st.text_input("Numéro de Série (S/N)")
+        new_item = st.text_input("Nom de l'équipement (ex: MRFU)")
+        new_brand = st.selectbox("Marque", ["Huawei", "Nokia", "Eltek", "Ceragon"])
+        submit = st.form_submit_button("Ajouter au dépôt")
+        
+        if submit:
+            new_row = {
+                'S/N': new_sn, 'Equipement': new_item, 'Marque': new_brand,
+                'Statut': 'Disponible', 'Date_Entree': datetime.now().strftime("%Y-%m-%d"),
+                'Localisation': 'Dépôt Dolisie'
+            }
+            st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new_row])], ignore_index=True)
+            st.success(f"Équipement {new_sn} ajouté avec succès !")
 
-# Charger les données initiales une seule fois
-if st.button("Initialiser / Synchroniser avec le fichier DOLISIE"):
-    if load_data_into_db("DOLISIE.xlsx - Sheet1.csv"):
-        st.success("Données synchronisées !")
-    else:
-        st.error("Fichier source introuvable.")
+# --- SECTION : SORTIE ---
+elif choice == "📤 Sortie / Mouvement":
+    st.subheader("Sortie de matériel vers site")
+    sn_to_move = st.selectbox("Choisir le S/N à sortir", st.session_state.df[st.session_state.df['Statut'] == 'Disponible']['S/N'])
+    dest = st.text_input("Destination (Nom du Site)")
+    responsable = st.text_input("Technicien responsable")
+    
+    if st.button("Confirmer la sortie"):
+        idx = st.session_state.df.index[st.session_state.df['S/N'] == sn_to_move].tolist()[0]
+        st.session_state.df.at[idx, 'Statut'] = 'Sorti / Installé'
+        st.session_state.df.at[idx, 'Localisation'] = dest
+        st.warning(f"L'équipement {sn_to_move} est maintenant localisé à {dest}")
 
-menu = ["Inventaire", "📥 Entrée", "📤 Sortie"]
-choice = st.sidebar.selectbox("Actions", menu)
-
-with Session(engine) as session:
-    if choice == "Inventaire":
-        st.subheader("État du Stock Réel")
-        items = session.query(Equipement).all()
-        if items:
-            df_display = pd.DataFrame([vars(i) for i in items]).drop('_sa_instance_state', axis=1)
-            st.dataframe(df_display, use_container_width=True)
-        else:
-            st.info("La base de données est vide.")
-
-    elif choice == "📥 Entrée":
-        st.subheader("Ajouter un équipement")
-        # Formulaire d'ajout ici...
-        st.write("Fonctionnalité prête pour saisie manuelle.")
-
-    elif choice == "📤 Sortie":
-        st.subheader("Enregistrer un mouvement")
-        # Logique de sortie ici...
-        st.write("Sélectionnez un S/N pour changement de site.")
+# --- SECTION : AUDIT ---
+elif choice == "📋 Audit":
+    st.subheader("Rapport de disponibilité")
+    total = len(st.session_state.df)
+    dispo = len(st.session_state.df[st.session_state.df['Statut'] == 'Disponible'])
+    
+    st.metric("Total Équipements", total)
+    st.metric("Disponibilité", f"{dispo} unités", delta=f"{(dispo/total)*100:.1f}%")
